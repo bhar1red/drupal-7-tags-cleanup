@@ -1,0 +1,146 @@
+<?php
+
+/**
+* Implements hook_cron().
+*/
+
+function tags_cleanup_cron() {
+  //Place holder to convert this into cronjob , instead of drush command.
+  tags_cleanup_execute();
+}
+
+
+/**
+* Function to Execute cleanup.
+* Logic:
+*   1: Get data from taxonomy_term_data of type = tags, group by names(Stripped of spaces, special characters, cases) and having count>1
+*   2: For each row,
+*   3: Get Duplicate tags to be replaced
+*     3.1: Get list of simmilar names and their tids (check using stipped name)
+*     3.2: Sort Array Based on Priority / Preference.
+*     3.3: Get list of tids (in sorted order ) into an array() - $z_tids
+*   4: Update Tags
+*     4.1: Update field_data_field_tags. Replace all tid in field_data_field_tags from $z_tids with $z_tids[0]
+*   5: Clean up duplicate tags from taxonomy_term_data
+*/
+function tags_cleanup_execute(){
+  print_r("Tags cleanup Process starts. \n");
+
+  //Get Duplicate tags form taxonomy_term_data
+  $dup_tags = db_query("SELECT tid, replace(replace(replace(replace(replace(name , ' ',''), '-',''), ',',''), '_', ''), '/','') b, count(*) c "
+          . "FROM taxonomy_term_data "
+          . "WHERE vid=1 "
+          . "GROUP BY b "
+          . "HAVING c>1")
+          ->fetchAll();
+
+  foreach($dup_tags as $dup_tag){
+    
+    //Get list of similar tags, matching $dup_tag  
+    $z = db_query("SELECT tid, name "
+            . "FROM taxonomy_term_data "
+            . "where vid=1 "
+            . "AND replace(replace(replace(replace(replace(name , ' ',''), '-',''), ',',''), '_', ''), '/','') = :name", array(":name" => $dup_tag->b))
+            ->fetchAll();
+    $z = _sort_array_on_priority($z);
+    $z_tids = array();
+    foreach($z as $z1){
+      $z_tids[] = $z1->tid;
+    }
+
+    //Update field_data_field_tags table. Most of the content type uses the same field.  
+    $q = db_update('field_data_field_tags')
+        ->fields(array('field_tags_tid' => $z_tids[0]))
+        ->condition('field_tags_tid', $z_tids, 'IN')
+        ->execute();
+
+    print_r("field_data_field_tags : ". $q . "rows have been updated. \n . Terms : \n");
+    print_r($z_tids);
+    print_r("\n");
+    
+    // TO demonstrate, how, if we have other tables, that use tags as well. 
+    $q = db_update('field_data_field_forum_default_tags')
+        ->fields(array('field_forum_default_tags_tid' => $z_tids[0]))
+        ->condition('field_forum_default_tags_tid', $z_tids, 'IN')
+        ->execute();
+    print_r("field_data_field_forum_default_tags : ". $q . "rows have been updated. \n . Terms : \n");
+    print_r($z_tids);
+    print_r("\n");
+    
+    //Add more $q=... if you have more fields, that use tags. 
+
+    array_shift($z_tids);
+
+    // Delete other similar tags, keeping main tag.  
+    $q = db_delete('taxonomy_term_data')
+       ->condition('vid',1)
+       ->condition('tid', $z_tids, 'IN')
+       ->execute();
+    print_r("taxonomy_term_data : ". $q . "rows have been deleted. \n . Terms : \n");
+    print_r($z_tids);
+    print_r("\n");
+
+    }
+
+  }
+
+
+  /**
+  * Sort array based on Priority or Preference based on _check_priority() function.
+  * It uses logic, same as bubble_sort()
+  * @param $arr
+  *   Array of objects, with respective tids and names
+  * @return
+  *   Sorted Array
+  */
+  function _sort_array_on_priority($arr){
+    $size = count($arr);
+    for($i=0; $i<$size; $i++){
+      for($j=0;$j<$size-1-$i;$j++){
+        if(_check_priority($arr[$j+1]->name, $arr[$j]->name)){
+          swap($arr, $j, $j+1);
+        }
+      }
+    }
+    return $arr;
+  }
+
+  /**
+  * Function to determine which tag to use, based on number of '_', ' ', Capitals and '/'
+  * @param $a, $b
+  *   Two strings to be compared
+  * @return
+  *   Boolean value, True is $a has higher preference over $b.
+  *
+  */
+  function _check_priority($a, $b){
+    //If $a has more number of '_' than $b
+    if(substr_count($a, '-') > substr_count($b, '-') ){
+      return true;
+    }
+
+    //If $a has more number of 'Spaces' than $b
+    if(substr_count($a, ' ') > substr_count($b, ' ') ){
+      return true;
+    }
+
+    //If $a has more number of 'Capital Letters' than $b
+    if(strlen(preg_replace('/[^A-Z]+/', '', $a) ) > strlen(preg_replace('/[^A-Z]+/', '', $b)) )
+    {
+      return true;
+    }
+
+    //If $a has more number of 'Spaces' than $b
+    if(substr_count($a, '/') > substr_count($b, '/') ){
+      return true;
+    }
+
+    return false;
+  }
+
+//To swap elements based on their positions.
+function swap(&$arr, $a, $b) {
+  $tmp = $arr[$a];
+  $arr[$a] = $arr[$b];
+  $arr[$b] = $tmp;
+}
